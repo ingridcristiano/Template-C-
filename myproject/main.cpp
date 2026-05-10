@@ -10,7 +10,7 @@ int main()
     NGFGF
     try
 
-    {
+    {JYGJFJHTDND
         
         //grayscale image (8 bits per pixel)
 
