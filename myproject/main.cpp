@@ -9,7 +9,7 @@ int main()
 {
    
     try
-
+         skdjskjdhksjdfhksjh
     {
         
         //grayscale image (8 bits per pixel)
