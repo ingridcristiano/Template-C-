@@ -3,7 +3,7 @@
 #include <fstream>
 #include "functions.h"
 
-ciaooooooooo
+
 int main()
 
 {
