@@ -1,9 +1,9 @@
 # Top-Level CmakeLists.txt to build IPA projects
-cmake_minimum_required(VERSION 4.0)
+cmake_minimum_required(VERSION 3.0)
 project( ipa )
 
-cmake_policy(SET CMP0054 NEW) 
-cmake_policy(SET CMP0045 NEW)
+cmake_policy(SET CMP0054 OLD) 
+cmake_policy(SET CMP0045 OLD)
 
 # hide unused predefined variables
 set (CMAKE_INSTALL_PREFIX ${CMAKE_INSTALL_PREFIX} CACHE INTERNAL "")

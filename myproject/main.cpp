@@ -1,221 +1,171 @@
 #include "ipaConfig.h"
 #include "ucasConfig.h"
 #include <fstream>
+#include <vector>
 #include "functions.h"
 
-
 int main()
-
 {
-   
     try
-         
     {
-        
-        //grayscale image (8 bits per pixel)
+        // 1. LETTURA AUTOMATICA DELLA CARTELLA
+        std::string folderPath = std::string(EXAMPLE_IMAGES_PATH);
+        std::vector<cv::String> filenames;
 
-        cv::Mat imgGray8 = cv::imread(std::string(EXAMPLE_IMAGES_PATH) + "/gal.jpg", cv::IMREAD_GRAYSCALE);
+        // Cerca tutti i file .jpeg nella cartella
+        cv::glob(folderPath + "/*.jpeg", filenames);
 
-        if (!imgGray8.data)
+        if (filenames.empty())
+            throw ipa::error("Nessuna immagine trovata nella cartella specificata");
 
-            throw ipa::error("Cannot load image");
+        printf("Trovate %zu immagini. Inizio estrazione...\n", filenames.size());
 
-        printf("Image loaded: dims = %d x %d, channels = %d, bitdepth = %d\n",
-
-            imgGray8.rows, imgGray8.cols, imgGray8.channels(), ipa::bitdepth(imgGray8.depth()));
-
-        ipa::imshow("An 8-bit grayscale image", imgGray8);
-
-
-
-        //  Conversione in float (in questo modo i pixel hanno valori decimali più precisi invece che da 0 a 255)
-
-        cv::Mat imgFloat;
-
-        imgGray8.convertTo(imgFloat, CV_32F, 1.0 / 255.0);
-
-
-
-        //  Applicazione del logaritmo per esaltare le sorgenti deboli
-
-        cv::log(imgFloat + 1.0f, imgFloat);
-
-
-
-        //  Normalizzazione e ritorno al formato 8-bit per la visualizzazione
-
-        cv::normalize(imgFloat, imgGray8, 0, 255, cv::NORM_MINMAX, CV_8U);
-
-
-
-        ipa::imshow("Immagine Post-Logaritmo", imgGray8);
-
-
-
-        //  Creazione dell'elemento strutturante (un cerchio di raggio 15)
-
-        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15));
-
-
-
-        //  Applicazione del filtro Top-Hat (White Top-Hat)
-
-        cv::morphologyEx(imgGray8, imgGray8, cv::MORPH_TOPHAT, kernel);
-
-
-       ipa::imshow("Immagine Post-TopHat", imgGray8);
-
-
-
-        //  Creazione della maschera binaria con l'algoritmo di Otsu
-
-        cv::Mat imgBin;
-
-        cv::threshold(imgGray8, imgBin, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-
-
-        ipa::imshow("Maschera Binaria", imgBin);
-
-
-
-        // Estrazione delle componenti connesse (oggetti isolati)
-
-        cv::Mat labels, stats, centroids;
-
-        int nObjects = cv::connectedComponentsWithStats(imgBin, labels, stats, centroids);
-
-
-
-        // Stampa il numero di oggetti trovati (escludendo lo sfondo)
-
-        printf("Numero di oggetti rilevati: %d\n", nObjects - 1);
-
-
-
-        // Creazione e apertura del file CSV
-
+        // 2. CREAZIONE CSV CON COLONNA "IMAGE_NAME"
         std::ofstream csvFile("dataset_estratto.csv");
+        csvFile << "Image_Name;ID;Centroid_X;Centroid_Y;Area;Width;Height;Compactness;Eccentricity\n";
 
+        // 3. CICLO SU TUTTE LE IMMAGINI
+        for (size_t f = 0; f < filenames.size(); f++)
+        {
+            cv::Mat imgGray8 = cv::imread(filenames[f], cv::IMREAD_GRAYSCALE);
+            if (!imgGray8.data) continue;
 
+            // Estrazione del nome del file per il CSV
+            std::string fullPath = filenames[f];
+            std::string fileName = fullPath.substr(fullPath.find_last_of("/\\") + 1);
 
-        // intestazione 
+            //printf("Elaborazione: %s\n", fileName.c_str());
 
-        csvFile << "ID;Centroid_X;Centroid_Y;Area;Width;Height;Compactness;Eccentricity";
+            // --- PROCESSING ---
+            cv::Mat imgFloat;
+            imgGray8.convertTo(imgFloat, CV_32F, 1.0 / 255.0);
 
+            //trasformazione logaritmica
+            cv::log(imgFloat + 1.0f, imgFloat);
+            cv::normalize(imgFloat, imgGray8, 0, 255, cv::NORM_MINMAX, CV_8U);
 
-        // Ciclo for per analizzare ogni singolo oggetto
+            cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15));
+            cv::morphologyEx(imgGray8, imgGray8, cv::MORPH_TOPHAT, kernel);
 
-        for (int i = 1; i < nObjects; i++) {
+            cv::Mat imgBin;
+            cv::threshold(imgGray8, imgBin, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
 
+            // --- Aggiungi questo blocco DOPO la binarizzazione di Otsu e PRIMA dell'estrazione delle feature ---
 
-            int area = stats.at<int>(i, cv::CC_STAT_AREA);
+// --- Aggiungi questo blocco DOPO la binarizzazione di Otsu e PRIMA dell'estrazione delle feature ---
 
+           // --- INIZIO BLOCCO DI DEBUG (Solo per la prima immagine) ---
+            if (f == 0)
+            {
+                // 1. Immagine originale (ricaricata per confronto)
+                cv::Mat viewOrig = cv::imread(filenames[f], cv::IMREAD_GRAYSCALE);
+                ipa::imshow("1. Originale (Grayscale)", viewOrig);
 
-            // FILTRO RUMORE: Analizziamo solo gli oggetti con area maggiore di 10 pixel
+                // 2. Post-Logaritmo (Passaggio intermedio "puro")
+                cv::Mat tempFloat, viewLog;
+                viewOrig.convertTo(tempFloat, CV_32F, 1.0 / 255.0);
+                cv::log(tempFloat + 1.0f, tempFloat);
+                cv::normalize(tempFloat, viewLog, 0, 255, cv::NORM_MINMAX, CV_8U);
+                ipa::imshow("2. Post-Logaritmo", viewLog);
 
-            if (area > 10) {
+                // 3. Post-White Top-Hat
+                cv::Mat viewTopHat;
+                cv::Mat kernelVisual = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15));
+                cv::morphologyEx(viewLog, viewTopHat, cv::MORPH_TOPHAT, kernelVisual);
+                ipa::imshow("3. Post-White Top-Hat", viewTopHat);
 
-                // Estrazione coordinate del centro
+                // 4. Risultato Binarizzazione di Otsu
+                ipa::imshow("4. Binarizzazione (Otsu)", imgBin);
 
-                double cx = centroids.at<double>(i, 0);
+                // 5. Risultato Finale (Pulizia con Apertura)
+                cv::Mat viewFinal;
+                cv::Mat kernelSmall = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+                cv::morphologyEx(imgBin, viewFinal, cv::MORPH_OPEN, kernelSmall);
+                ipa::imshow("5. Risultato Pulito (Ready for Features)", viewFinal);
 
-                double cy = centroids.at<double>(i, 1);
+                // 6. Connected Components (Colori Falsi)
+                cv::Mat viewLabels, viewStats, viewCentroids;
+                int nObjectsForView = cv::connectedComponentsWithStats(imgBin, viewLabels, viewStats, viewCentroids);
 
+                if (nObjectsForView > 1)
+                {
+                    cv::Mat viewConnectedColor = cv::Mat::zeros(imgBin.size(), CV_8UC3);
+                    std::vector<cv::Vec3b> colors(nObjectsForView);
+                    colors[0] = cv::Vec3b(0, 0, 0); // Sfondo nero
 
+                    for (int i = 1; i < nObjectsForView; i++)
+                        colors[i] = cv::Vec3b(rand() & 255, rand() & 255, rand() & 255);
 
-                // Estrazione dimensioni bounding box
+                    for (int r = 0; r < viewConnectedColor.rows; r++) {
+                        for (int c = 0; c < viewConnectedColor.cols; c++) {
+                            int label = viewLabels.at<int>(r, c);
+                            viewConnectedColor.at<cv::Vec3b>(r, c) = colors[label];
+                        }
+                    }
+                    ipa::imshow("6. Connected Components (Colori Falsi)", viewConnectedColor);
+                }
+                else
+                {
+                    printf("Nessun oggetto trovato per la visualizzazione Components.\n");
+                }
 
-                int width = stats.at<int>(i, cv::CC_STAT_WIDTH);
-
-                int height = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-
-
-
-                // CALCOLO COMPATTEZZA: Area / (Larghezza * Altezza)
-
-               double compactness = (double)area / (width * height);
-
-               // CALCOLO ECCENTRICITÀ TRAMITE MOMENTI
-               
-                // Estraiamo le coordinate del bounding box per creare una ROI (Region of Interest)
-
-               int x = stats.at<int>(i, cv::CC_STAT_LEFT);
-               int y = stats.at<int>(i, cv::CC_STAT_TOP);
-               cv::Rect roi(x, y, width, height);
-
-               // Creiamo una maschera binaria solo per l'oggetto corrente (molto più veloce che farla su tutta l'immagine)
-
-               cv::Mat objMask = (labels(roi) == i);
-
-               // Calcoliamo i momenti
-
-               cv::Moments m = cv::moments(objMask, true);
-
-               double eccentricity = 0.0;
-
-               // Evitiamo divisioni per zero assicurandoci che l'oggetto abbia "massa"
-
-               if (m.m00 > 0) {
-                   double mu20 = m.mu20;
-                   double mu02 = m.mu02;
-                   double mu11 = m.mu11;
-
-                   // Calcolo degli autovalori
-
-                   double delta = std::sqrt(4 * mu11 * mu11 + (mu20 - mu02) * (mu20 - mu02));
-                   double lambda1 = (mu20 + mu02 + delta) / 2.0; // asse maggiore
-                   double lambda2 = (mu20 + mu02 - delta) / 2.0; // asse minore
-
-                   // Se l'asse maggiore è valido, calcoliamo l'eccentricità
-
-                   if (lambda1 > 0) {
-                       eccentricity = std::sqrt(1.0 - (lambda2 / lambda1));
-                   }
-
-				   // Scriviamo i dati estratti nel file CSV
-                   csvFile << i << ";" << cx << ";" << cy << ";" << area << ";" << width << ";" << height << ";" << compactness << ";" << eccentricity << "\n";
-               }
+                printf("Anteprima mostrata per la prima immagine. Premi un tasto su una finestra per continuare il ciclo...\n");
+                cv::waitKey(0); // Ferma l'esecuzione solo qui
             }
+            // --- FINE BLOCCO DI DEBUG ---
+            // 
+            // --- ESTRAZIONE FEATURE ---
+            cv::Mat labels, stats, centroids;
+            int nObjects = cv::connectedComponentsWithStats(imgBin, labels, stats, centroids);
 
+            for (int i = 1; i < nObjects; i++) {
+                int area = stats.at<int>(i, cv::CC_STAT_AREA);
+
+                // FILTRO RUMORE (abbassato a 3 per catturare anche le piastrine)
+                if (area > 3) {
+                    double cx = centroids.at<double>(i, 0);
+                    double cy = centroids.at<double>(i, 1);
+                    int width = stats.at<int>(i, cv::CC_STAT_WIDTH);
+                    int height = stats.at<int>(i, cv::CC_STAT_HEIGHT);
+
+                    double compactness = (double)area / (width * height);
+
+                    int x = stats.at<int>(i, cv::CC_STAT_LEFT);
+                    int y = stats.at<int>(i, cv::CC_STAT_TOP);
+                    cv::Rect roi(x, y, width, height);
+
+                    cv::Mat objMask = (labels(roi) == i);
+                    cv::Moments m = cv::moments(objMask, true);
+
+                    double eccentricity = 0.0;
+                    if (m.m00 > 0) {
+                        double delta = std::sqrt(4 * m.mu11 * m.mu11 + (m.mu20 - m.mu02) * (m.mu20 - m.mu02));
+                        double lambda1 = (m.mu20 + m.mu02 + delta) / 2.0;
+                        double lambda2 = (m.mu20 + m.mu02 - delta) / 2.0;
+
+                        if (lambda1 > 0) {
+                            eccentricity = std::sqrt(1.0 - (lambda2 / lambda1));
+                        }
+                    }
+
+                    // Scrittura nel CSV includendo il nome del file all'inizio
+                    csvFile << fileName << ";" << i << ";" << cx << ";" << cy << ";"
+                        << area << ";" << width << ";" << height << ";"
+                        << compactness << ";" << eccentricity << "\n";
+                }
+            }
         }
 
-
-
-        csvFile.close(); // Chiudiamo il file per salvare i dati
-
-        printf("Estrazione completata con successo! Dati salvati in dataset_estratto.csv\n");
-
-
-        // Comando per aprire automaticamente il file CSV (specifico per Windows)
-
+        csvFile.close();
+        printf("Estrazione completata! File salvato come dataset_estratto.csv\n");
         system("start dataset_estratto.csv");
 
-
-
-
-
         return EXIT_SUCCESS;
-
     }
-
-    catch (ipa::error& ex)
-
-    {
-
+    catch (ipa::error& ex) {
         std::cout << "EXCEPTION thrown by " << ex.getSource() << "source :\n\t|=> " << ex.what() << std::endl;
-
     }
-
-    catch (ucas::Error& ex)
-
-    {
-
-        std::cout << "EXCEPTION thrown by unknown source :\n\t|=> " << ex.what() << std::endl;
-
-    }
-    catch (cv::Exception& ex)
-    {
+    catch (cv::Exception& ex) {
         std::cout << "OPENCV EXCEPTION:\n\t|=> " << ex.what() << std::endl;
     }
-
 }
