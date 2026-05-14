@@ -1,171 +1,115 @@
-#include "ipaConfig.h"
-#include "ucasConfig.h"
+#include <opencv2/opencv.hpp>
 #include <fstream>
+#include <iostream>
+#include <string>
 #include <vector>
-#include "functions.h"
+#include <filesystem> // Necessario per creare la cartella
 
-int main()
-{
-    try
-    {
-        // 1. LETTURA AUTOMATICA DELLA CARTELLA
-        std::string folderPath = std::string(EXAMPLE_IMAGES_PATH);
-        std::vector<cv::String> filenames;
+namespace fs = std::filesystem;
 
-        // Cerca tutti i file .jpeg nella cartella
-        cv::glob(folderPath + "/*.jpeg", filenames);
+struct BoundingBox {
+    std::string label;
+    int x1, y1, x2, y2;
+};
 
-        if (filenames.empty())
-            throw ipa::error("Nessuna immagine trovata nella cartella specificata");
+// Funzione di lettura JSON
+std::vector<BoundingBox> leggiJsonAMano(const std::string& filepath) {
+    std::vector<BoundingBox> boxes;
+    std::ifstream file(filepath);
+    if (!file.is_open()) return boxes;
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    size_t pos = 0;
+    while (true) {
+        pos = content.find("\"classTitle\": \"", pos);
+        if (pos == std::string::npos) break;
+        pos += 15;
+        size_t endQuote = content.find("\"", pos);
+        std::string label = content.substr(pos, endQuote - pos);
+        pos = content.find("\"exterior\":", pos);
+        if (pos == std::string::npos) break;
+        int coords[4];
+        for (int i = 0; i < 4; i++) {
+            pos = content.find_first_of("0123456789", pos);
+            if (pos == std::string::npos) break;
+            size_t endNum = content.find_first_not_of("0123456789", pos);
+            coords[i] = std::stoi(content.substr(pos, endNum - pos));
+            pos = endNum;
+        }
+        boxes.push_back({ label, coords[0], coords[1], coords[2], coords[3] });
+    }
+    return boxes;
+}
 
-        printf("Trovate %zu immagini. Inizio estrazione...\n", filenames.size());
+int main() {
+    try {
+        // 1. PERCORSI
+        std::string basePath = "C:\\Progetti\\Template C++\\";
+        std::string pathImmagini = basePath + "example_images\\*.jpg";
+        std::string folderJson = basePath + "ann\\";
 
-        // 2. CREAZIONE CSV CON COLONNA "IMAGE_NAME"
-        std::ofstream csvFile("dataset_estratto.csv");
-        csvFile << "Image_Name;ID;Centroid_X;Centroid_Y;Area;Width;Height;Compactness;Eccentricity\n";
+        // Cartella di output visibile in Visual Studio
+        std::string folderOutput = basePath + "risultati_elaborati\\";
 
-        // 3. CICLO SU TUTTE LE IMMAGINI
-        for (size_t f = 0; f < filenames.size(); f++)
-        {
-            cv::Mat imgGray8 = cv::imread(filenames[f], cv::IMREAD_GRAYSCALE);
-            if (!imgGray8.data) continue;
-
-            // Estrazione del nome del file per il CSV
-            std::string fullPath = filenames[f];
-            std::string fileName = fullPath.substr(fullPath.find_last_of("/\\") + 1);
-
-            //printf("Elaborazione: %s\n", fileName.c_str());
-
-            // --- PROCESSING ---
-            cv::Mat imgFloat;
-            imgGray8.convertTo(imgFloat, CV_32F, 1.0 / 255.0);
-
-            //trasformazione logaritmica
-            cv::log(imgFloat + 1.0f, imgFloat);
-            cv::normalize(imgFloat, imgGray8, 0, 255, cv::NORM_MINMAX, CV_8U);
-
-            cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15));
-            cv::morphologyEx(imgGray8, imgGray8, cv::MORPH_TOPHAT, kernel);
-
-            cv::Mat imgBin;
-            cv::threshold(imgGray8, imgBin, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
-
-            // --- Aggiungi questo blocco DOPO la binarizzazione di Otsu e PRIMA dell'estrazione delle feature ---
-
-// --- Aggiungi questo blocco DOPO la binarizzazione di Otsu e PRIMA dell'estrazione delle feature ---
-
-           // --- INIZIO BLOCCO DI DEBUG (Solo per la prima immagine) ---
-            if (f == 0)
-            {
-                // 1. Immagine originale (ricaricata per confronto)
-                cv::Mat viewOrig = cv::imread(filenames[f], cv::IMREAD_GRAYSCALE);
-                ipa::imshow("1. Originale (Grayscale)", viewOrig);
-
-                // 2. Post-Logaritmo (Passaggio intermedio "puro")
-                cv::Mat tempFloat, viewLog;
-                viewOrig.convertTo(tempFloat, CV_32F, 1.0 / 255.0);
-                cv::log(tempFloat + 1.0f, tempFloat);
-                cv::normalize(tempFloat, viewLog, 0, 255, cv::NORM_MINMAX, CV_8U);
-                ipa::imshow("2. Post-Logaritmo", viewLog);
-
-                // 3. Post-White Top-Hat
-                cv::Mat viewTopHat;
-                cv::Mat kernelVisual = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15));
-                cv::morphologyEx(viewLog, viewTopHat, cv::MORPH_TOPHAT, kernelVisual);
-                ipa::imshow("3. Post-White Top-Hat", viewTopHat);
-
-                // 4. Risultato Binarizzazione di Otsu
-                ipa::imshow("4. Binarizzazione (Otsu)", imgBin);
-
-                // 5. Risultato Finale (Pulizia con Apertura)
-                cv::Mat viewFinal;
-                cv::Mat kernelSmall = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
-                cv::morphologyEx(imgBin, viewFinal, cv::MORPH_OPEN, kernelSmall);
-                ipa::imshow("5. Risultato Pulito (Ready for Features)", viewFinal);
-
-                // 6. Connected Components (Colori Falsi)
-                cv::Mat viewLabels, viewStats, viewCentroids;
-                int nObjectsForView = cv::connectedComponentsWithStats(imgBin, viewLabels, viewStats, viewCentroids);
-
-                if (nObjectsForView > 1)
-                {
-                    cv::Mat viewConnectedColor = cv::Mat::zeros(imgBin.size(), CV_8UC3);
-                    std::vector<cv::Vec3b> colors(nObjectsForView);
-                    colors[0] = cv::Vec3b(0, 0, 0); // Sfondo nero
-
-                    for (int i = 1; i < nObjectsForView; i++)
-                        colors[i] = cv::Vec3b(rand() & 255, rand() & 255, rand() & 255);
-
-                    for (int r = 0; r < viewConnectedColor.rows; r++) {
-                        for (int c = 0; c < viewConnectedColor.cols; c++) {
-                            int label = viewLabels.at<int>(r, c);
-                            viewConnectedColor.at<cv::Vec3b>(r, c) = colors[label];
-                        }
-                    }
-                    ipa::imshow("6. Connected Components (Colori Falsi)", viewConnectedColor);
-                }
-                else
-                {
-                    printf("Nessun oggetto trovato per la visualizzazione Components.\n");
-                }
-
-                printf("Anteprima mostrata per la prima immagine. Premi un tasto su una finestra per continuare il ciclo...\n");
-                cv::waitKey(0); // Ferma l'esecuzione solo qui
-            }
-            // --- FINE BLOCCO DI DEBUG ---
-            // 
-            // --- ESTRAZIONE FEATURE ---
-            cv::Mat labels, stats, centroids;
-            int nObjects = cv::connectedComponentsWithStats(imgBin, labels, stats, centroids);
-
-            for (int i = 1; i < nObjects; i++) {
-                int area = stats.at<int>(i, cv::CC_STAT_AREA);
-
-                // FILTRO RUMORE (abbassato a 3 per catturare anche le piastrine)
-                if (area > 3) {
-                    double cx = centroids.at<double>(i, 0);
-                    double cy = centroids.at<double>(i, 1);
-                    int width = stats.at<int>(i, cv::CC_STAT_WIDTH);
-                    int height = stats.at<int>(i, cv::CC_STAT_HEIGHT);
-
-                    double compactness = (double)area / (width * height);
-
-                    int x = stats.at<int>(i, cv::CC_STAT_LEFT);
-                    int y = stats.at<int>(i, cv::CC_STAT_TOP);
-                    cv::Rect roi(x, y, width, height);
-
-                    cv::Mat objMask = (labels(roi) == i);
-                    cv::Moments m = cv::moments(objMask, true);
-
-                    double eccentricity = 0.0;
-                    if (m.m00 > 0) {
-                        double delta = std::sqrt(4 * m.mu11 * m.mu11 + (m.mu20 - m.mu02) * (m.mu20 - m.mu02));
-                        double lambda1 = (m.mu20 + m.mu02 + delta) / 2.0;
-                        double lambda2 = (m.mu20 + m.mu02 - delta) / 2.0;
-
-                        if (lambda1 > 0) {
-                            eccentricity = std::sqrt(1.0 - (lambda2 / lambda1));
-                        }
-                    }
-
-                    // Scrittura nel CSV includendo il nome del file all'inizio
-                    csvFile << fileName << ";" << i << ";" << cx << ";" << cy << ";"
-                        << area << ";" << width << ";" << height << ";"
-                        << compactness << ";" << eccentricity << "\n";
-                }
-            }
+        // Creazione cartella se non esiste
+        if (!fs::exists(folderOutput)) {
+            fs::create_directories(folderOutput);
         }
 
-        csvFile.close();
-        printf("Estrazione completata! File salvato come dataset_estratto.csv\n");
-        system("start dataset_estratto.csv");
+        std::vector<cv::String> filenames;
+        cv::glob(pathImmagini, filenames);
 
-        return EXIT_SUCCESS;
+        if (filenames.empty()) {
+            std::cout << "Nessun file .jpg trovato!" << std::endl;
+            return -1;
+        }
+
+        std::cout << "Salvataggio in corso in: " << fs::absolute(folderOutput) << "\n" << std::endl;
+
+        for (size_t i = 0; i < filenames.size(); i++) {
+            cv::Mat img = cv::imread(filenames[i]);
+            if (img.empty()) continue;
+
+            std::string fullPath = filenames[i];
+            size_t lastSlash = fullPath.find_last_of("/\\");
+            std::string fileNameOnly = (lastSlash == std::string::npos) ? fullPath : fullPath.substr(lastSlash + 1);
+            size_t lastDot = fileNameOnly.find_last_of(".");
+            std::string baseName = fileNameOnly.substr(0, lastDot);
+
+            std::string jsonPath = folderJson + baseName + ".jpeg.json";
+            std::vector<BoundingBox> oggettiTrovati = leggiJsonAMano(jsonPath);
+
+            // Disegno dei box
+            for (const auto& obj : oggettiTrovati) {
+                cv::Scalar color;
+                if (obj.label == "WBC") {
+                    color = cv::Scalar(0, 255, 0);   // VERDE per i Bianchi
+                }
+                else if (obj.label == "RBC") {
+                    color = cv::Scalar(0, 0, 255);   // ROSSO per i Rossi
+                }
+                else if (obj.label == "Platelets") {
+                    color = cv::Scalar(255, 255, 0); // CIANO/GIALLO per le Piastrine
+                }
+                else {
+                    color = cv::Scalar(255, 255, 255); // BIANCO per altro
+                }
+                cv::rectangle(img, cv::Point(obj.x1, obj.y1), cv::Point(obj.x2, obj.y2), color, 2);
+                cv::putText(img, obj.label, cv::Point(obj.x1, obj.y1 - 5), cv::FONT_HERSHEY_SIMPLEX, 0.4, color, 1);
+            }
+
+            // 2. SALVATAGGIO FISICO
+            std::string savePath = folderOutput + baseName + "_elaborata.jpg";
+            cv::imwrite(savePath, img);
+
+            // Stampa del percorso per ogni file
+            std::cout << "[" << i + 1 << "/" << filenames.size() << "] Salvato: " << savePath << std::endl;
+        }
+
+        std::cout << "\n--- OPERAZIONE COMPLETATA ---" << std::endl;
+        std::cout << "Tutte le immagini sono pronte nella cartella: " << folderOutput << std::endl;
     }
-    catch (ipa::error& ex) {
-        std::cout << "EXCEPTION thrown by " << ex.getSource() << "source :\n\t|=> " << ex.what() << std::endl;
+    catch (const std::exception& e) {
+        std::cerr << "Errore: " << e.what() << std::endl;
     }
-    catch (cv::Exception& ex) {
-        std::cout << "OPENCV EXCEPTION:\n\t|=> " << ex.what() << std::endl;
-    }
+    return 0;
 }
