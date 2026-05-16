@@ -1,200 +1,142 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <vector>
+#include <string>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 int main() {
     try {
         // =========================================================================
-        // 1. CARICAMENTO SINGOLA IMMAGINE
+        // 1. SETUP PERCORSI PARALLELI (ORIGINALI VS ANNOTATE)
         // =========================================================================
-        // ---> MODIFICA QUESTA RIGA CON IL TUO PERCORSO <---
-        std::string imagePath = "C:/Progetti/Template C++/example_images/BloodImage_00001.jpeg";
+        std::string folderOriginali = "C:/Progetti/Template C++/example_images/";
+        std::string folderAnnotate  = "C:/Progetti/Template C++/output/";
+        
+        std::string outFolderBianchi = "C:/Progetti/Template C++/output_bianchi/";
+        std::string outFolderPiastrine = "C:/Progetti/Template C++/output_piastrine/";
 
-        cv::Mat imgOriginale = cv::imread(imagePath, cv::IMREAD_COLOR);
-        if (imgOriginale.empty()) {
-            std::cerr << "ERRORE: Impossibile caricare l'immagine." << std::endl;
+        fs::create_directories(outFolderBianchi);
+        fs::create_directories(outFolderPiastrine);
+
+        // Usiamo la cartella delle originali per impostare il ciclo di lettura
+        std::vector<cv::String> imagePaths;
+        cv::glob(folderOriginali + "*.jpeg", imagePaths);
+
+        if (imagePaths.empty()) {
+            std::cerr << "ERRORE: Nessuna immagine originale trovata in example_images." << std::endl;
             return -1;
-        }
+        } 
 
-        std::cout << "Premi un tasto qualsiasi sulla finestra dell'immagine per avanzare allo step successivo..." << std::endl;
-
-        cv::namedWindow("1. Originale", cv::WINDOW_NORMAL);
-        cv::imshow("1. Originale", imgOriginale);
-        cv::waitKey(0); // PAUSA 1
+        // I tuoi parametri corretti dal calibratore Python (H, S, V)
+        cv::Scalar lowerViolaGlobale(78, 23, 161);
+        cv::Scalar upperViolaGlobale(134, 255, 252);
 
         // =========================================================================
-        // 2. PRE-PROCESSING
+        // 2. CICLO DI ELABORAZIONE
         // =========================================================================
-        cv::Mat imgColor;
-        // Ammorbidiamo l'immagine per ridurre il rumore
-        cv::GaussianBlur(imgOriginale, imgColor, cv::Size(5, 5), 0);
+        for (size_t f = 0; f < imagePaths.size(); f++) {
+            // A. Carichiamo l'immagine ORIGINALE su cui faremo TUTTI i calcoli
+            cv::Mat imgOriginale = cv::imread(imagePaths[f], cv::IMREAD_COLOR);
+            if (imgOriginale.empty()) continue;
 
-        cv::Mat imgHSV, imgGray;
-        cv::cvtColor(imgColor, imgHSV, cv::COLOR_BGR2HSV);
-        cv::cvtColor(imgColor, imgGray, cv::COLOR_BGR2GRAY);
+            // Estraiamo il nome del file (es. BloodImage_00005.jpeg)
+            std::string fullPath = imagePaths[f];
+            size_t lastSlash = fullPath.find_last_of("/\\");
+            std::string fileName = fullPath.substr(lastSlash + 1);
 
-        // =====================================================================
-        // 3. PIPELINE: MASCHERA VIOLA (LEUCOCITI)
-        // =====================================================================
-        // I "numeri magici" trovati tramite la calibrazione manuale
-        cv::Scalar lowerViola(116, 71, 128);
-        cv::Scalar upperViola(132, 255, 255);
+            // B. Carichiamo l'immagine ANNOTATA corrispondente (solo per la visualizzazione)
+            std::string pathAnnotata = folderAnnotate + fileName;
+            cv::Mat imgAnnotataReale = cv::imread(pathAnnotata, cv::IMREAD_COLOR);
+            
+            if (imgAnnotataReale.empty()) {
+                std::cout << "Avviso: Manca l'immagine annotata per " << fileName << ". Mostrero' solo l'originale." << std::endl;
+                imgAnnotataReale = imgOriginale.clone(); // Fallback se manca il file annotato
+            }
 
-        cv::Mat maskViola;
-        cv::inRange(imgHSV, lowerViola, upperViola, maskViola);
+            std::cout << "\n--- Elaborazione in corso: " << fileName << " (" << f + 1 << "/" << imagePaths.size() << ") ---" << std::endl;
 
-        cv::namedWindow("2. Filtro Colore Diretto (Solo Viola)", cv::WINDOW_NORMAL);
-        cv::imshow("2. Filtro Colore Diretto (Solo Viola)", maskViola);
-        cv::waitKey(0); // PAUSA 2
+            // =====================================================================
+            // FASE A: PRE-PROCESSING (PULIZIA RIGIDA SULL'IMMAGINE ORIGINALE)
+            // =====================================================================
+            cv::Mat imgMedian, imgBilateral;
+            cv::medianBlur(imgOriginale, imgMedian, 3);
+            cv::bilateralFilter(imgMedian, imgBilateral, 9, 75, 75);
 
-        // PULIZIA MORFOLOGICA
-        // 1. CLOSING: Tappa i buchi neri all'interno del nucleo (usa un pennello grande)
-        cv::morphologyEx(maskViola, maskViola, cv::MORPH_CLOSE, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15)));
+            cv::Mat imgHSV;
+            cv::cvtColor(imgBilateral, imgHSV, cv::COLOR_BGR2HSV);
 
-        // 2. OPENING: Cancella i piccoli puntini bianchi isolati (rumore) sullo sfondo
-        cv::morphologyEx(maskViola, maskViola, cv::MORPH_OPEN, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3)));
+            // =====================================================================
+            // FASE B: MASCHERA COLORE (DALL'ORIGINALE PULITA)
+            // =====================================================================
+            cv::Mat maskGlobale;
+            cv::inRange(imgHSV, lowerViolaGlobale, upperViolaGlobale, maskGlobale);
 
-        cv::namedWindow("3. Maschera Viola Pulita", cv::WINDOW_NORMAL);
-        cv::imshow("3. Maschera Viola Pulita", maskViola);
-        cv::waitKey(0); // PAUSA 3
+            // Morfologia matematica per compattare i nuclei e uccidere la polvere
+            cv::morphologyEx(maskGlobale, maskGlobale, cv::MORPH_CLOSE, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(9, 9)));
+            cv::morphologyEx(maskGlobale, maskGlobale, cv::MORPH_OPEN, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3)));
 
-        // =====================================================================
-        // 4. PIPELINE: MASCHERA ROSA (ERITROCITI)
-        // =====================================================================
-        cv::Mat maskTutteLeCellule;
+            // =====================================================================
+            // FASE C: SMISTAMENTO PER AREA
+            // =====================================================================
+            cv::Mat maskSoloBianchi = cv::Mat::zeros(imgOriginale.size(), CV_8UC1);
+            cv::Mat maskSoloPiastrine = cv::Mat::zeros(imgOriginale.size(), CV_8UC1);
 
-        // Usiamo Otsu Invertito sull'immagine in Scala di Grigi. 
-        // Lo sfondo chiaro diventa nero, le cellule scure diventano bianche.
-        cv::threshold(imgGray, maskTutteLeCellule, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
+            cv::Mat labels, stats, centroids;
+            int nLabels = cv::connectedComponentsWithStats(maskGlobale, labels, stats, centroids);
 
-        cv::namedWindow("4. Otsu (Tutte le cellule)", cv::WINDOW_NORMAL);
-        cv::imshow("4. Otsu (Tutte le cellule)", maskTutteLeCellule);
-        cv::waitKey(0); // PAUSA 4
+            for (int i = 1; i < nLabels; i++) {
+                int area = stats.at<int>(i, cv::CC_STAT_AREA);
 
-        // Riempiamo le "ciambelle" (i buchi chiari al centro dei globuli rossi)
-        std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(maskTutteLeCellule, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+                if (area >= 800) {
+                    maskSoloBianchi.setTo(255, labels == i); 
+                }
+                else if (area >= 10 && area <= 300) {
+                    maskSoloPiastrine.setTo(255, labels == i); 
+                }
+            }
 
-        cv::Mat maskCellulePiene = cv::Mat::zeros(maskTutteLeCellule.size(), CV_8UC1);
-        cv::drawContours(maskCellulePiene, contours, -1, cv::Scalar(255), cv::FILLED);
-        cv::namedWindow("5. Cellule Piene (Buchi Chiusi)", cv::WINDOW_NORMAL);
-        cv::imshow("5. Cellule Piene (Buchi Chiusi)", maskCellulePiene);
-        cv::waitKey(0); // PAUSA 5
+            // Dilatazione estetica delle piastrine per renderle ben visibili a schermo
+            cv::dilate(maskSoloPiastrine, maskSoloPiastrine, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5)));
 
-        // Isoliamo i globuli rossi sottraendo la maschera viola (leucociti) dal totale
-        cv::Mat maskRosa;
-        cv::subtract(maskCellulePiene, maskViola, maskRosa);
+            // =====================================================================
+            // FASE D: SALVATAGGIO MASCHERE PULITE
+            // =====================================================================
+            cv::imwrite(outFolderBianchi + fileName, maskSoloBianchi);
+            cv::imwrite(outFolderPiastrine + fileName, maskSoloPiastrine);
 
-        // Pulizia dei bordi sfrangiati dei globuli rossi
-        cv::morphologyEx(maskRosa, maskRosa, cv::MORPH_OPEN, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7)));
-        cv::namedWindow("6. Maschera Rosa Finale", cv::WINDOW_NORMAL);
-        cv::imshow("6. Maschera Rosa Finale", maskRosa);
-        cv::waitKey(0); // PAUSA 6
-        // =====================================================================
-         // 4.5 ALTERNATIVA: HOUGH CIRCLE TRANSFORM (Argomento 20)
-         // La tua idea: cercare maschere circolari di dimensione nota!
-         // =====================================================================
+            // =====================================================================
+            // FASE E: FINESTRE DI CONTROLLO (CONFRONTO CORRETTO)
+            // =====================================================================
+            // Finestra 1: L'immagine originale pulita del dataset (su cui hai lavorato)
+            cv::namedWindow("1. Immagine Originale di Lavoro", cv::WINDOW_NORMAL);
+            cv::imshow("1. Immagine Originale di Lavoro", imgOriginale);
 
-         // Hough Circles lavora benissimo sull'immagine in scala di grigi originale,
-         // ma è sensibile al rumore, quindi la sfochiamo un po'.
-        cv::Mat grayBlur;
-        cv::medianBlur(imgGray, grayBlur, 5);
+            // Finestra 2: L'immagine annotata con i rettangoli (usata come guida visiva per te)
+            cv::namedWindow("2. GUIDA REALE (Con Bounding Box)", cv::WINDOW_NORMAL);
+            cv::imshow("2. GUIDA REALE (Con Bounding Box)", imgAnnotataReale);
 
-        // --- I TUOI PARAMETRI CRITICI DA CALIBRARE ---
-        // Quanto è grande un globulo rosso nella tua foto? (in pixel)
-        int raggioMinimo = 45;  // Metti il raggio del globulo più piccolo
-        int raggioMassimo = 65; // Metti il raggio del globulo più grande
+            // Finestra 3: La maschera dei Bianchi estratta dall'originale
+            cv::namedWindow("3. TUA MASK - GLOBULI BIANCHI", cv::WINDOW_NORMAL);
+            cv::imshow("3. TUA MASK - GLOBULI BIANCHI", maskSoloBianchi);
 
-        // Distanza minima tra due centri (se è troppo piccola, trova 2 cerchi sovrapposti sulla stessa cellula)
-        int distanzaMinimaTraCentri = raggioMinimo * 0.8;
+            // Finestra 4: La maschera delle Piastrine estratta dall'originale
+            cv::namedWindow("4. TUA MASK - PIASTRINE", cv::WINDOW_NORMAL);
+            cv::imshow("4. TUA MASK - PIASTRINE", maskSoloPiastrine);
 
-        // Vettore che conterrà i risultati: [x del centro, y del centro, raggio]
-        std::vector<cv::Vec3f> cerchiTrovati;
-
-        // LA MAGIA DI HOUGH
-        cv::HoughCircles(grayBlur, cerchiTrovati, cv::HOUGH_GRADIENT, 1,
-            distanzaMinimaTraCentri,
-            50,  // Parametro 1: Sensibilità ai bordi (Canny). Di solito 50 va bene.
-            10,  // Parametro 2: Soglia per i centri. PIÙ È BASSO = Trova più cerchi (anche falsi). PIÙ È ALTO = Trova solo cerchi perfetti.
-            raggioMinimo, raggioMassimo);
-
-        // Disegniamo i risultati sull'immagine a colori
-        cv::Mat imgRisultatoHough = imgOriginale.clone();
-
-        std::cout << "\nGlobuli Rossi trovati con Hough: " << cerchiTrovati.size() << std::endl;
-
-        for (size_t i = 0; i < cerchiTrovati.size(); i++) {
-            cv::Point centro(cvRound(cerchiTrovati[i][0]), cvRound(cerchiTrovati[i][1]));
-            int raggio = cvRound(cerchiTrovati[i][2]);
-
-            // Disegna il puntino del centro (verde)
-            cv::circle(imgRisultatoHough, centro, 2, cv::Scalar(0, 255, 0), 3, cv::LINE_AA);
-            // Disegna il perimetro del globulo rosso (rosso/fucsia)
-            cv::circle(imgRisultatoHough, centro, raggio, cv::Scalar(255, 0, 255), 2, cv::LINE_AA);
+            // Premi un tasto qualsiasi sulle finestre per avanzare nel dataset, ESC per uscire
+            int key = cv::waitKey(0);
+            if (key == 27) {
+                std::cout << "\nInterruzione manuale." << std::endl;
+                break;
+            }
         }
 
-        cv::namedWindow("9. Globuli Rossi (Hough Circles)", cv::WINDOW_NORMAL);
-        cv::imshow("9. Globuli Rossi (Hough Circles)", imgRisultatoHough);
-
-        std::cout << "Premi un ultimo tasto per chiudere." << std::endl;
-        cv::waitKey(0);
-        // =====================================================================
-        // 5. ESTRAZIONE FEATURE DA HOUGH CON "DOPPIO CONTROLLO" COLORE
-        // =====================================================================
-       
-        int globuliRossiValidi = 0;
-
-        std::cout << "\n--- ANALISI GLOBULI ROSSI (HOUGH + COLORE) ---" << std::endl;
-
-        for (size_t i = 0; i < cerchiTrovati.size(); i++) {
-            int cx = cvRound(cerchiTrovati[i][0]);
-            int cy = cvRound(cerchiTrovati[i][1]);
-            int raggio = cvRound(cerchiTrovati[i][2]);
-
-            // 0. Sicurezza: Evitiamo che il programma vada in crash se Hough trova un cerchio sul bordo
-            if (cx < 0 || cx >= imgOriginale.cols || cy < 0 || cy >= imgOriginale.rows) {
-                continue;
-            }
-
-            // 1. FILTRO LEUCOCITA: Cade nella maschera viola?
-            if (maskViola.at<uchar>(cy, cx) > 0) {
-                continue; // È il globulo bianco, ignoralo.
-            }
-
-            // 2. IL TUO FILTRO SUPER ROBUSTO: Cade nella maschera rosa?
-            // maskRosa è l'immagine dello Step 4/6 (dove i globuli rossi sono bianchi e lo sfondo è nero)
-            if (maskRosa.at<uchar>(cy, cx) == 0) {
-                // Il centro cade nel NERO. Significa che Hough ha disegnato un cerchio 
-                // in mezzo al nulla (falso positivo). Lo scartiamo spietatamente!
-                continue;
-            }
-
-            // Se sopravvive a tutti i controlli, è un vero globulo rosso!
-            globuliRossiValidi++;
-
-            // ESTRAZIONE FEATURE MATEMATICHE (Area del cerchio)
-            double area = CV_PI * raggio * raggio;
-
-            std::cout << "Eritrocita ID " << globuliRossiValidi
-                << " | Raggio: " << raggio << " px"
-                << " | Area Stimata: " << cvRound(area) << " px"
-                << " | Centro: (X:" << cx << ", Y:" << cy << ")" << std::endl;
-
-            // Disegna il risultato
-            cv::circle(imgRisultatoHough, cv::Point(cx, cy), 2, cv::Scalar(0, 255, 0), 3, cv::LINE_AA);
-            cv::circle(imgRisultatoHough, cv::Point(cx, cy), raggio, cv::Scalar(255, 0, 255), 2, cv::LINE_AA);
-        }
-
-        std::cout << "\nTOTALE GLOBULI ROSSI VALIDI E VERIFICATI: " << globuliRossiValidi << std::endl;
-
-        cv::namedWindow("9. Globuli Rossi (Hough + Colore)", cv::WINDOW_NORMAL);
-        cv::imshow("9. Globuli Rossi (Hough + Colore)", imgRisultatoHough);
-
-        std::cout << "Premi un ultimo tasto per chiudere." << std::endl;
-        cv::waitKey(0);
+        std::cout << "\n[FINE] Controllo incrociato completato!" << std::endl;
     }
     catch (const std::exception& e) {
-        std::cerr << "Errore a runtime: " << e.what() << std::endl;
+        std::cerr << "Errore: " << e.what() << std::endl;
     }
     return 0;
 }
